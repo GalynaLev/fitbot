@@ -1,9 +1,10 @@
-"""Тимчасові дані користувачів і тестове нагадування."""
+"""Стан користувачів через JSON-базу."""
 
 import asyncio
 from datetime import datetime
 
-users = {}
+from bot.database import load_data, save_data
+
 reminder_tasks = {}
 
 
@@ -13,9 +14,12 @@ def get_name(message) -> str:
 
 
 def ensure_user(user_id: int, name: str) -> None:
-    """Створити користувача в пам'яті."""
-    if user_id not in users:
-        users[user_id] = {
+    """Створити користувача в базі, якщо його ще нема."""
+    data = load_data()
+    user_id = str(user_id)
+
+    if user_id not in data:
+        data[user_id] = {
             "name": name,
             "training": False,
             "walk": False,
@@ -25,24 +29,35 @@ def ensure_user(user_id: int, name: str) -> None:
             "last_walk": None,
             "last_food": None,
         }
+        save_data(data)
 
 
 def mark(user_id: int, key: str, date_key: str) -> bool:
     """Відмітити дію за сьогодні."""
+    data = load_data()
+    user_id = str(user_id)
     today = datetime.now().date().isoformat()
-    if users[user_id][date_key] == today:
+
+    if data[user_id][date_key] == today:
         return False
-    users[user_id][key] = True
-    users[user_id][date_key] = today
+
+    data[user_id][key] = True
+    data[user_id][date_key] = today
+    save_data(data)
     return True
 
 
 def mark_training(user_id: int) -> bool:
     """Відмітити тренування."""
     ok = mark(user_id, "training", "last_training")
+
     if ok:
-        users[user_id]["streak"] += 1
-        cancel_test_reminder(user_id)
+        data = load_data()
+        user_id = str(user_id)
+        data[user_id]["streak"] += 1
+        save_data(data)
+        cancel_test_reminder(int(user_id))
+
     return ok
 
 
@@ -58,25 +73,27 @@ def mark_food(user_id: int) -> bool:
 
 def get_streak(user_id: int) -> int:
     """Повернути серію."""
-    return users[user_id]["streak"]
+    data = load_data()
+    return data[str(user_id)]["streak"]
 
 
 def cancel_test_reminder(user_id: int) -> None:
-    """Скасувати попереднє тестове нагадування для користувача."""
+    """Скасувати тестове нагадування."""
     task = reminder_tasks.get(user_id)
     if task and not task.done():
         task.cancel()
 
 
 async def send_test_training_reminder(bot, user_id: int):
-    """Через 1 хвилину надіслати тестове нагадування, якщо тренування не відмічено."""
+    """Через 1 хвилину надіслати нагадування, якщо тренування не відмічено."""
     try:
         await asyncio.sleep(60)
 
-        if user_id not in users:
-            return
+        data = load_data()
+        user = data.get(str(user_id))
 
-        user = users[user_id]
+        if not user:
+            return
 
         if not user["training"]:
             text = (
@@ -84,6 +101,7 @@ async def send_test_training_reminder(bot, user_id: int):
                 "Якщо сьогодні ще не було тренування — можна почати навіть з 5 хвилин 💪"
             )
             await bot.send_message(chat_id=user_id, text=text)
+
     except asyncio.CancelledError:
         pass
     finally:
@@ -91,7 +109,7 @@ async def send_test_training_reminder(bot, user_id: int):
 
 
 def start_test_reminder(bot, user_id: int) -> None:
-    """Запустити одне тестове нагадування і скасувати попереднє, якщо воно було."""
+    """Запустити одне тестове нагадування."""
     cancel_test_reminder(user_id)
     reminder_tasks[user_id] = asyncio.create_task(
         send_test_training_reminder(bot, user_id)
